@@ -2,14 +2,14 @@
 
 ScriptDirectory="$(dirname $0)"
 Interface="$1"
-Hostapd="$ScriptDirectory/rtl-hostapd"
+#Hostapd="$ScriptDirectory/hostapd"
 ConfigFile="./pifi-$Interface.conf"
 DhcpdConfigFile="./pifi-$Interface-dhcpd.conf"
 HostapdConfigFile="./pifi-$Interface-hostapd.conf"
 WpaConfigFile="./pifi-$Interface-wpa.conf"
 
 State="Idle"
-AccessPointDriver="rtl871xdrv"
+#AccessPointDriver="nl80211"
 AccessPointSsid="RaspberryPi"
 AccessPointPassphrase="raspberry"
 AccessPointChannel="6"
@@ -31,6 +31,18 @@ WiFiList=""
 if [[ "$Interface" == "" ]]; then
   echo "Usage: $0 INTERFACE [-d | -i | -a | -w | -s]" && exit 1
 fi
+
+determine_driver(){
+  # rtl8192cu has a broken hostap driver
+  lsusb -t |grep rtl8192cu > /dev/null
+  if [ $? -eq 0 ]; then
+    Hostapd="rtl-hostapd"
+    AccessPointDriver="rtl871xdrv"
+  else
+    Hostapd="hostapd"
+    AccessPointDriver="nl80211"
+  fi
+}
 
 write_config() {
   cat << EOF > $ConfigFile
@@ -61,14 +73,15 @@ ip_address() {
 }
 
 disable_networking() {
-  killall dhcpd rtl-hostapd wpa_supplicant dhcpcd &> /dev/null
+  killall dhcpd $Hostapd wpa_supplicant dhcpcd &> /dev/null
   ifconfig $Interface down &> /dev/null
   ifconfig $Interface 0.0.0.0 up &> /dev/null
   ifconfig $Interface down &> /dev/null
 }
 
 host_ap() {
-  Unassociated=$(iwconfig $Interface | grep unassociated)
+  Unassociated=$(iw dev $Interface link | grep "Not connected")
+#Unassociated=$(iwconfig $Interface | grep unassociated) # ?"Not-Associated"
 
   if [[ "$Unassociated" != "" ]]; then
     disable_networking
@@ -101,7 +114,7 @@ EOF
     dhcpd -cf $DhcpdConfigFile $Interface &> /dev/null && rm $DhcpdConfigFile
   fi
 
-  HostapdPid=$(pidof rtl-hostapd)
+  HostapdPid=$(pidof $Hostapd)
 
   if [[ "$HostapdPid" == "" ]]; then
     cat << EOF > $HostapdConfigFile
@@ -123,7 +136,7 @@ EOF
     $Hostapd -B $HostapdConfigFile &> /dev/null && rm $HostapdConfigFile
   fi
 
-  WiFiList=$(iwlist $Interface scan | grep ESSID | cut -d':' -f2 | grep -v '""' | sort | uniq | tr '\n' ',' | sed 's/"//g' | sed 's/,$/\n/g')
+  WiFiList=$(iw dev $Interface scan ap-force | grep SSID | cut -d':' -f2 | grep -v '""' | sort | uniq | tr '\n' ',' | sed 's/"//g' | sed 's/,$/\n/g')
   write_config
 }
 
@@ -218,6 +231,7 @@ run_daemon() {
   done
 }
 
+determine_driver
 load_config
 
 if [[ "$2" == "-a" ]]; then
@@ -232,7 +246,7 @@ elif [[ "$2" == "-w" ]]; then
   write_config
 elif [[ "$2" == "-i" ]]; then
   State="Idle"
-  write_config 
+  write_config
 elif [[ "$2" == "-s" ]]; then
   echo "$State"
 elif [[ "$2" == "-l" ]]; then

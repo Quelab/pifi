@@ -9,6 +9,11 @@ $ crontab -e
 @reboot pifi wlan0 -d /usr/sbin &
 ```
 
+as distributed on chillhub
+``` bash
+/bin/bash /usr/bin/pifi wlan0 -d /root
+```
+
 #### Print the state of the wireless interface
 
 ``` bash
