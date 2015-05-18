@@ -1,15 +1,17 @@
 #! /bin/bash
+unset UPDATE_CONFIGURATION
+unset START_DAEMON
+unset VERBOSE
+
+UPDATE_CONFIGURATION=0
+START_DAEMON=0
+VERBOSE=0
+GET_WIFI_LIST=0
+GET_STATE=0
+RUN_ONCE=0
 
 ScriptDirectory="$(dirname $0)"
-Interface="$1"
-#Hostapd="$ScriptDirectory/hostapd"
-ConfigFile="./pifi-$Interface.conf"
-DhcpdConfigFile="./pifi-$Interface-dhcpd.conf"
-HostapdConfigFile="./pifi-$Interface-hostapd.conf"
-WpaConfigFile="./pifi-$Interface-wpa.conf"
-
 State="Idle"
-#AccessPointDriver="nl80211"
 AccessPointSsid="RaspberryPi"
 AccessPointPassphrase="raspberry"
 AccessPointChannel="6"
@@ -28,9 +30,9 @@ WiFiPassphrase="raspberry"
 WiFiTimeout="0"
 WiFiList=""
 
-if [[ "$Interface" == "" ]]; then
-  echo "Usage: $0 INTERFACE [-d | -i | -a | -w | -s]" && exit 1
-fi
+print(){
+  if [ $VERBOSE -eq 1 ]; then echo "$1"; fi
+}
 
 determine_driver(){
   # rtl8192cu has a broken hostap driver
@@ -42,9 +44,18 @@ determine_driver(){
     Hostapd="hostapd"
     AccessPointDriver="nl80211"
   fi
+
+  print "Wifi Driver being used: ${Hostapd} - (${AccessPointDriver})"
+}
+
+load_config() {
+  if [[ -f $ConfigFile ]]; then
+    . $ConfigFile
+  fi
 }
 
 write_config() {
+  print "Updating Configuration File"
   cat << EOF > $ConfigFile
 State="$State"
 AccessPointDriver="$AccessPointDriver"
@@ -68,56 +79,8 @@ WiFiList="$WiFiList"
 EOF
 }
 
-ip_address() {
-  ifconfig $Interface | grep "inet " | awk '{print $2}' | cut -d':' -f2
-}
-
-disable_networking() {
-  killall dhcpd $Hostapd wpa_supplicant dhcpcd &> /dev/null
-  ifconfig $Interface down &> /dev/null
-  ifconfig $Interface 0.0.0.0 up &> /dev/null
-  ifconfig $Interface down &> /dev/null
-}
-
-host_ap() {
-  Unassociated=$(iw dev $Interface link | grep "Not connected")
-#Unassociated=$(iwconfig $Interface | grep unassociated) # ?"Not-Associated"
-
-  if [[ "$Unassociated" != "" ]]; then
-    disable_networking
-  fi
-
-  IpAddress=$(ip_address)
-
-  if [[ "$IpAddress" != "$AccessPointGateway" ]]; then
-    ifconfig $Interface down
-    ifconfig $Interface $AccessPointGateway netmask $AccessPointSubnetMask up
-  fi
-
-  DhcpdPid=$(pidof dhcpd)
-
-  if [[ "$DhcpdPid" == "" ]]; then
-    cat << EOF > $DhcpdConfigFile
-authoritative;
-
-subnet $AccessPointSubnet netmask $AccessPointSubnetMask {
-  range $AccessPointFirst $AccessPointLast;
-  option broadcast-address $AccessPointBroadcast;
-  option routers $AccessPointGateway;
-  default-lease-time $AccessPointDefaultLease;
-  max-lease-time $AccessPointMaxLease;
-  option domain-name "$AccessPointDomain";
-  option domain-name-servers 8.8.8.8, 8.8.4.4;
-}
-EOF
-
-    dhcpd -cf $DhcpdConfigFile $Interface &> /dev/null && rm $DhcpdConfigFile
-  fi
-
-  HostapdPid=$(pidof $Hostapd)
-
-  if [[ "$HostapdPid" == "" ]]; then
-    cat << EOF > $HostapdConfigFile
+write_hostapd_config(){
+  cat << EOF > $HostapdConfigFile
 interface=$Interface
 driver=$AccessPointDriver
 ssid=$AccessPointSsid
@@ -132,7 +95,66 @@ wpa_key_mgmt=WPA-PSK
 wpa_pairwise=TKIP
 rsn_pairwise=CCMP
 EOF
+}
 
+write_dhcpd_config(){
+  cat << EOF > $DhcpdConfigFile
+authoritative;
+
+subnet $AccessPointSubnet netmask $AccessPointSubnetMask {
+  range $AccessPointFirst $AccessPointLast;
+  option broadcast-address $AccessPointBroadcast;
+  option routers $AccessPointGateway;
+  default-lease-time $AccessPointDefaultLease;
+  max-lease-time $AccessPointMaxLease;
+  option domain-name "$AccessPointDomain";
+  option domain-name-servers 8.8.8.8, 8.8.4.4;
+}
+EOF
+}
+
+ip_address() {
+  ifconfig $Interface | grep "inet " | awk '{print $2}' | cut -d':' -f2
+}
+
+disable_networking() {
+  print "disabling networking"
+  killall dhcpd $Hostapd wpa_supplicant dhcpcd &> /dev/null
+  ifconfig $Interface down &> /dev/null
+  ifconfig $Interface 0.0.0.0 up &> /dev/null
+  ifconfig $Interface down &> /dev/null
+}
+
+host_ap() {
+  Unassociated=$(iw dev $Interface link | grep "Not connected")
+#Unassociated=$(iwconfig $Interface | grep unassociated) # ?"Not-Associated"
+  IpAddress=$(ip_address)
+  print $Unassociated
+  if [ "$Unassociated" != "" ] && [ "$IpAddress" == "" ]; then
+    print $Unassociated
+    print "Networking Interface Not Associated"
+    disable_networking
+  fi
+
+  IpAddress=$(ip_address)
+
+  if [[ "$IpAddress" != "$AccessPointGateway" ]]; then
+    ifconfig $Interface down
+    ifconfig $Interface $AccessPointGateway netmask $AccessPointSubnetMask up
+  fi
+
+  DhcpdPid=$(pidof dhcpd)
+
+  if [[ "$DhcpdPid" == "" ]]; then
+    write_dhcpd_config
+
+    dhcpd -cf $DhcpdConfigFile $Interface &> /dev/null && rm $DhcpdConfigFile
+  fi
+
+  HostapdPid=$(pidof $Hostapd)
+
+  if [[ "$HostapdPid" == "" ]]; then
+    write_hostapd_config
     $Hostapd -B $HostapdConfigFile &> /dev/null && rm $HostapdConfigFile
   fi
 
@@ -192,38 +214,31 @@ wifi_connected() {
   fi
 }
 
-load_config() {
-  if [[ -f $ConfigFile ]]; then
-    . $ConfigFile
-  fi
-}
-
-run_once() {
-  if [[ "$State" == "Idle" ]]; then
-    disable_networking
-  elif [[ "$State" == "AccessPoint" ]]; then
-    State="AccessPoint_Hosting"
-    write_config
-    disable_networking
-  elif [[ "$State" == "AccessPoint_Hosting" ]]; then
-    host_ap
-  elif [[ "$State" == "WiFi" ]]; then
-    State="WiFi_Connecting"
-    WiFiTimeout=$(date -d 'today + 1 minutes' +%s)
-    write_config
-    disable_networking
-  elif [[ "$State" == "WiFi_Connecting" ]]; then
-    wifi_connect
-  elif [[ "$State" == "WiFi_Reconnecting" ]]; then
-    wifi_reconnect
-  elif [[ "$State" == "WiFi_Connected" ]]; then
-    wifi_connected
-  else
-    echo "Unknown state: $State" && exit 2
-  fi
+run_once(){
+  print "running once"
+  case "$State" in
+    "AccessPoint")
+      State="AccessPoint_Hosting"
+      write_config
+      disable_networking
+      ;;
+    "WiFi")
+      State="WiFi_Connecting"
+      WiFiTimeout=$(date -d 'today + 1 minutes' +%s)
+      write_config
+      disable_networking
+      ;;
+    "Idle")                disable_networking;;
+    "AccessPoint_Hosting") host_ap ;;
+    "WiFi_Connecting")     wifi_connect;;
+    "WiFi_Reconnecting")   wifi_reconnect;;
+    "WiFi_Connected")      wifi_connected;;
+    *) echo "Unknown state: $State" && exit 2;;
+  esac
 }
 
 run_daemon() {
+  print "daemon mode"
   while [ : ]; do
     load_config
     run_once
@@ -231,32 +246,56 @@ run_daemon() {
   done
 }
 
-determine_driver
-load_config
+usage(){
+  echo "Usage: $0 INTERFACE [-d | -i | -a | -w | -s]"
+}
 
-if [[ "$2" == "-a" ]]; then
-  State="AccessPoint"
-  AccessPointSsid="$3"
-  AccessPointPassphrase="$4"
-  write_config
-elif [[ "$2" == "-w" ]]; then
-  State="WiFi"
-  WiFiSsid="$3"
-  WiFiPassphrase="$4"
-  write_config
-elif [[ "$2" == "-i" ]]; then
-  State="Idle"
-  write_config
-elif [[ "$2" == "-s" ]]; then
-  echo "$State"
-elif [[ "$2" == "-l" ]]; then
-  echo "$WiFiList"
-elif [[ "$2" == "-d" ]]; then
-  cd "$3"
-  run_daemon
-elif [[ "$2" != "" ]]; then
-  echo "Unknown option: $2" && exit 1
+
+if [ "$#" == "0" ]; then
+  usage
+  exit 1
 else
-  run_once
+  Interface="$1"
+  if ! [[ $Interface =~ ^wlan[0-9]+$ ]] ; then echo "${Interface} is invalid" && exit 2; fi
+  shift
 fi
 
+ConfigFile="./pifi-$Interface.conf"
+load_config
+
+while getopts "a:w:isld:vo" opt; do
+  case $opt in
+    a)
+      State="AccessPoint"
+      AccessPointSsid="$OPTARG"
+      AccessPointPassphrase="$3"
+      UPDATE_CONFIGURATION=1
+      ;;
+    w)
+      State="WiFi"
+      WiFiSsid="$OPTARG"
+      WiFiPassphrase="$3"
+      UPDATE_CONFIGURATION=1
+      ;;
+    i)
+      State="Idle"
+      UPDATE_CONFIGURATION=1
+      ;;
+    d) echo cd "$OPTARG"; START_DAEMON=1 ;;
+    o) RUN_ONCE=1 ;;
+    s) GET_STATE=1 ;;
+    l) GET_WIFI_LIST=1 ;;
+    v) VERBOSE=1 ;;
+  esac
+done
+
+DhcpdConfigFile="./pifi-$Interface-dhcpd.conf"
+HostapdConfigFile="./pifi-$Interface-hostapd.conf"
+WpaConfigFile="./pifi-$Interface-wpa.conf"
+
+determine_driver
+if [ $GET_WIFI_LIST -eq 1 ]; then echo "$WiFiList"; fi
+if [ $GET_STATE -eq 1 ]; then echo "$State"; fi
+if [ $OPTIND -eq 1 -o $RUN_ONCE -eq 1 ]; then run_once; fi
+if [ $UPDATE_CONFIGURATION -eq 1 ]; then write_config; fi
+if [ $START_DAEMON -eq 1 ]; then run_daemon; fi
