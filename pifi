@@ -49,8 +49,11 @@ determine_driver(){
 }
 
 load_config() {
+  print "loading config from $(realpath $ConfigFile)  "
   if [[ -f $ConfigFile ]]; then
     . $ConfigFile
+  else
+    print "Configuration File not found in $(pwd)"
   fi
 }
 
@@ -129,31 +132,33 @@ host_ap() {
   Unassociated=$(iw dev $Interface link | grep "Not connected")
 #Unassociated=$(iwconfig $Interface | grep unassociated) # ?"Not-Associated"
   IpAddress=$(ip_address)
-  print $Unassociated
-  if [ "$Unassociated" != "" ] && [ "$IpAddress" == "" ]; then
-    print $Unassociated
+
+  if [ "$Unassociated" != "Not Connected." ] && [ "$IpAddress" == "" ]; then
+    print "Interface is $Unassociated with no $IpAddress"
     print "Networking Interface Not Associated"
     disable_networking
   fi
 
+  # restart interface?
   IpAddress=$(ip_address)
-
   if [[ "$IpAddress" != "$AccessPointGateway" ]]; then
     ifconfig $Interface down
     ifconfig $Interface $AccessPointGateway netmask $AccessPointSubnetMask up
   fi
 
+  # restart dhcpd?
   DhcpdPid=$(pidof dhcpd)
-
   if [[ "$DhcpdPid" == "" ]]; then
+    print "restarting dhcpd"
     write_dhcpd_config
 
     dhcpd -cf $DhcpdConfigFile $Interface &> /dev/null && rm $DhcpdConfigFile
   fi
 
+  # restart hostapd?
   HostapdPid=$(pidof $Hostapd)
-
   if [[ "$HostapdPid" == "" ]]; then
+    print "restarting hostapd"
     write_hostapd_config
     $Hostapd -B $HostapdConfigFile &> /dev/null && rm $HostapdConfigFile
   fi
@@ -215,7 +220,7 @@ wifi_connected() {
 }
 
 run_once(){
-  print "running once"
+  print "in $State running once"
   case "$State" in
     "AccessPoint")
       State="AccessPoint_Hosting"
@@ -281,7 +286,7 @@ while getopts "a:w:isld:vo" opt; do
       State="Idle"
       UPDATE_CONFIGURATION=1
       ;;
-    d) echo cd "$OPTARG"; START_DAEMON=1 ;;
+    d) cd "$OPTARG"; START_DAEMON=1 ;;
     o) RUN_ONCE=1 ;;
     s) GET_STATE=1 ;;
     l) GET_WIFI_LIST=1 ;;
